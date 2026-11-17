@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="de-AT">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Forint ⇄ Euro – tagesgenauer Umrechner</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#2f6b4f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Forint ⇄ €">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<style>
+  :root { --bg:#f6f4ef; --card:#fff; --ink:#1d1d1f; --muted:#6b6b70; --line:#e2dfd8; --accent:#2f6b4f; --err:#a33; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--ink); }
+  main { max-width: 520px; margin: 0 auto;
+         padding: calc(24px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+                  calc(24px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); }
+  input { font-size: max(16px, 1.15rem); }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: .95rem; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px; }
+  label { display:block; font-size:.85rem; color:var(--muted); margin: 0 0 6px; }
+  .row { margin-bottom: 16px; }
+  input { width:100%; font-size:1.15rem; padding:10px 12px; border:1px solid var(--line); border-radius:10px; font-family:inherit; background:#fff; }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+  .amount { display:flex; gap:8px; align-items:center; }
+  .amount input { flex:1; }
+  .cur { font-weight:600; min-width:48px; text-align:center; }
+  button { font: inherit; border:1px solid var(--line); background:#fff; border-radius:10px; padding:10px 14px; cursor:pointer; }
+  button:hover { border-color: var(--accent); }
+  .swap { display:block; margin: 0 auto 16px; }
+  .result { font-size: 1.9rem; font-weight: 700; margin: 4px 0 2px; word-break: break-all; }
+  .rate { color: var(--muted); font-size: .9rem; line-height: 1.5; }
+  .note { margin-top: 10px; font-size: .85rem; color: #8a5a00; }
+  .err { color: var(--err); font-size: .9rem; }
+  .quick { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+  .quick button { padding:4px 10px; font-size:.85rem; }
+  footer { color: var(--muted); font-size: .8rem; margin-top: 16px; line-height: 1.5; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Forint ⇄ Euro</h1>
+  <p class="sub">Tagesgenauer Umrechner mit dem offiziellen Referenzkurs der Europäischen Zentralbank (EZB).</p>
+
+  <div class="card">
+    <div class="row">
+      <label for="date">Stichtag</label>
+      <input type="date" id="date" min="1999-01-04">
+      <div class="quick">
+        <button type="button" data-days="0">Heute</button>
+        <button type="button" data-days="1">Gestern</button>
+        <button type="button" data-days="7">vor 1 Woche</button>
+        <button type="button" data-days="30">vor 30 Tagen</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <label for="amount">Betrag</label>
+      <div class="amount">
+        <input type="text" id="amount" inputmode="decimal" value="10.000" autocomplete="off">
+        <span class="cur" id="fromCur">HUF</span>
+      </div>
+    </div>
+
+    <button type="button" class="swap" id="swap" title="Richtung tauschen">⇅ Richtung tauschen</button>
+
+    <div>
+      <label>Ergebnis</label>
+      <div class="result" id="result">–</div>
+      <div class="rate" id="rate">Kurs wird geladen …</div>
+      <div class="note" id="note" hidden></div>
+      <div class="err" id="err" hidden></div>
+    </div>
+  </div>
+
+  <footer>
+    Quelle: EZB-Euro-Referenzkurse über die freie <a href="https://frankfurter.dev" target="_blank" rel="noopener">Frankfurter-API</a>.
+    Die EZB veröffentlicht die Kurse an Arbeitstagen gegen 16:00 Uhr MEZ. An Wochenenden, Feiertagen und vor 16 Uhr gilt der letzte veröffentlichte Kurs.
+    Banken und Wechselstuben rechnen mit eigenen Kursen und Spesen – der Referenzkurs ist ein Mittelkurs.
+  </footer>
+</main>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const dateEl = $("date"), amountEl = $("amount"), resultEl = $("result"),
+        rateEl = $("rate"), noteEl = $("note"), errEl = $("err"), fromCurEl = $("fromCur");
+
+  let direction = "HUF_EUR";   // or "EUR_HUF"
+  let hufPerEur = null;        // e.g. 385.12
+  let rateDate = null;
+  const cache = {};
+
+  const fmt = (n, d) => new Intl.NumberFormat("de-AT", { minimumFractionDigits: d, maximumFractionDigits: d }).format(n);
+  const fmtDate = (iso) => { const [y,m,d] = iso.split("-"); return `${d}.${m}.${y}`; };
+  const isoLocal = (dt) => {
+    const y = dt.getFullYear(), m = String(dt.getMonth()+1).padStart(2,"0"), d = String(dt.getDate()).padStart(2,"0");
+    return `${y}-${m}-${d}`;
+  };
+
+  // Accepts "10.000", "10 000", "1.234,56", "1234.56", "1234,56"
+  function parseAmount(s) {
+    s = String(s).trim().replace(/\s|'/g, "");
+    if (!s) return NaN;
+    const lastComma = s.lastIndexOf(","), lastDot = s.lastIndexOf(".");
+    if (lastComma > -1 && lastDot > -1) {
+      // the later one is the decimal separator
+      if (lastComma > lastDot) s = s.replace(/\./g, "").replace(",", ".");
+      else s = s.replace(/,/g, "");
+    } else if (lastComma > -1) {
+      s = s.replace(",", ".");
+    } else if (lastDot > -1) {
+      // only dots: "10.000" → thousands; "12.5" → decimal
+      const parts = s.split(".");
+      if (parts.length > 2 || (parts[1] && parts[1].length === 3)) s = s.replace(/\./g, "");
+    }
+    return Number(s);
+  }
+
+  const today = isoLocal(new Date());
+  dateEl.max = today;
+  dateEl.value = today;
+
+  async function fetchRate(iso) {
+    if (cache[iso]) return cache[iso];
+    const path = iso === today ? "latest" : iso;
+    const urls = [
+      `https://api.frankfurter.dev/v1/${path}?base=EUR&symbols=HUF`
+    ];
+    let lastErr;
+    for (const url of urls) {
+      try {
+        const r = await fetch(url);
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const j = await r.json();
+        if (!j.rates || !j.rates.HUF) throw new Error("Kein HUF-Kurs in der Antwort");
+        const out = { rate: j.rates.HUF, date: j.date };
+        cache[iso] = out;
+        return out;
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr;
+  }
+
+  function render() {
+    errEl.hidden = true;
+    if (hufPerEur == null) return;
+    const amt = parseAmount(amountEl.value);
+    if (!isFinite(amt)) { resultEl.textContent = "–"; return; }
+    if (direction === "HUF_EUR") {
+      resultEl.textContent = fmt(amt / hufPerEur, 2) + " €";
+    } else {
+      resultEl.textContent = fmt(amt * hufPerEur, 0) + " Ft";
+    }
+    rateEl.innerHTML =
+      `1 € = <b>${fmt(hufPerEur, 2)} Ft</b> &nbsp;·&nbsp; 1.000 Ft = <b>${fmt(1000 / hufPerEur, 4)} €</b><br>` +
+      `EZB-Referenzkurs vom <b>${fmtDate(rateDate)}</b>`;
+    const wanted = dateEl.value;
+    if (rateDate !== wanted) {
+      noteEl.hidden = false;
+      noteEl.textContent = `Für den ${fmtDate(wanted)} gibt es (noch) keinen EZB-Kurs – verwendet wird der letzte veröffentlichte Kurs vom ${fmtDate(rateDate)}.`;
+    } else {
+      noteEl.hidden = true;
+    }
+  }
+
+  async function load() {
+    const iso = dateEl.value || today;
+    rateEl.textContent = "Kurs wird geladen …";
+    noteEl.hidden = true;
+    try {
+      const { rate, date } = await fetchRate(iso);
+      hufPerEur = rate; rateDate = date;
+      render();
+    } catch (e) {
+      hufPerEur = null;
+      resultEl.textContent = "–";
+      rateEl.textContent = "";
+      errEl.hidden = false;
+      errEl.textContent = "Der Kurs konnte nicht geladen werden (" + e.message + "). Bitte Internetverbindung prüfen und Seite neu laden.";
+    }
+  }
+
+  dateEl.addEventListener("change", load);
+  amountEl.addEventListener("input", render);
+  $("swap").addEventListener("click", () => {
+    direction = direction === "HUF_EUR" ? "EUR_HUF" : "HUF_EUR";
+    fromCurEl.textContent = direction === "HUF_EUR" ? "HUF" : "EUR";
+    amountEl.value = direction === "HUF_EUR" ? "10.000" : "100";
+    render();
+  });
+  document.querySelectorAll(".quick button").forEach(b => b.addEventListener("click", () => {
+    const d = new Date(); d.setDate(d.getDate() - Number(b.dataset.days));
+    dateEl.value = isoLocal(d); load();
+  }));
+
+  load();
+})();
+</script>
+</body>
+</html>
